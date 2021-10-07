@@ -4,6 +4,10 @@ import paho.mqtt.client as mqtt
 
 from secrets import MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, MQTT_CLIENT
 
+
+# todo: define a class/object that is the device group, stores name, devices in it, state, etc...
+# todo: use more of the zigbee2mqtt definition to get if it's a light or plug or w/e color_temp range, brightness range, ct range, etc...
+
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
     global time_connected
@@ -26,6 +30,7 @@ def on_connect(client, userdata, flags, rc):
 
 tas_groups = {}
 tas_devices = []
+tas_last_message = {}
 
 zig_groups = {}
 zig_devices = []
@@ -34,10 +39,14 @@ zig_devices = []
 def on_message(client, userdata, msg):
     global tas_groups
     global tas_devices
+    global tas_last_message
     global zig_groups
     global zig_devices
 
-    payload_str = str(msg.payload.decode("utf-8"))
+    try:
+        payload_str = str(msg.payload.decode("utf-8"))
+    except:
+        payload_str = ''
     
     split_topic = msg.topic.split('/')
     if split_topic[1][0:7] == 'tasmota':
@@ -56,8 +65,47 @@ def on_message(client, userdata, msg):
                     tas_devices.append(device)
                     client.publish('cmnd/%s/mqttlog' % device, payload='4', retain=False)
 
+                if device not in tas_last_message:
+                    tas_last_message[device] = ''
+
         if topic == 'LOGGING' and payload_str[13:16] == 'DGR':
-            print( payload_str[18:])
+            dg_log = payload_str[18:].replace(' (old)', '')
+            pre_colon, post_colon = (x.strip() for x in dg_log.split(':'))
+            dg_name = pre_colon.split(' ')[1]
+            split_post_color = (x.strip() for x in post_colon.split(', '))
+            dg_args = {x[0]: x[1] for x in [y.split('=') for y in split_post_color]}
+            dg_flags = int(dg_args['flags'])
+            if dg_flags == 0:
+                log_msg = '%s, %s' % (dg_name, dg_args)
+                for k, v in dg_args.items():
+                    v = v.replace('*','')
+                    if k == '128':
+                        bm = bin(int(v))[2:]
+                        bm = '0'*(32-len(bm)) + bm
+                        relay_count = int(bm[0:8],2)
+                        relay_bitmask = bm[8:][::-1]
+                        for r in range(relay_count):
+                            log_msg += ': Relay %d = %s' % (r+1, relay_bitmask[r])
+
+                print(log_msg)
+            if dg_flags & 1:
+                print(dg_name, 'DGR_FLAG_RESET')
+            if dg_flags & 2:
+                print(dg_name, 'DGR_FLAG_STATUS_REQUEST')
+            if dg_flags & 4:
+                print(dg_name, 'DGR_FLAG_FULL_STATUS')
+            if dg_flags & 8:
+                pass
+                # print(dg_name, 'DGR_FLAG_ACK')
+            if dg_flags & 16:
+                print(dg_name, 'DGR_FLAG_MORE_TO_COME')
+            if dg_flags & 32:
+                print(dg_name, 'DGR_FLAG_DIRECT')
+            if dg_flags & 64:
+                pass
+                # print(dg_name, 'DGR_FLAG_ANNOUNCEMENT')
+            if dg_flags & 128:
+                print(dg_name, 'DGR_FLAG_LOCAL')
 
     elif msg.topic == 'zigbee2mqtt/bridge/devices':
         zig_groups = {}
@@ -69,6 +117,7 @@ def on_message(client, userdata, msg):
             if len(friendly_name) > 3:
                 split_zdevice = friendly_name.split('_')
                 if split_zdevice[-1] == 'DGR': # then include in device groups
+                    print(zdevice)
                     zgroup = split_zdevice[-2]
 
                     if zgroup in zig_groups:
